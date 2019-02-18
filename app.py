@@ -1,7 +1,7 @@
 import requests
 import boto3
 import json
-import re
+import os
 import uuid
 import time
 from bs4 import BeautifulSoup
@@ -69,13 +69,24 @@ def detect_topic_model(input_config, output_config):
             return result
         else:
             print("job_status: " + job_status)
-            time.sleep(3)
+            time.sleep(10)
 
 def create_temp_file(url_hostname, file_content):
     file_name_ending = str(url_hostname) + ".txt"
     random_file_name = ''.join([str(uuid.uuid4().hex[:6]), file_name_ending])
     with open(random_file_name, 'w') as f:
         f.write(file_content)
+    
+    # now, check if the created file size is up to the minimum 500 bytes
+    # If it isn't, append newlines to fill it up
+    file_full_path = ''.join([os.getcwd(), '/', random_file_name])
+    file_size_in_bytes = os.path.getsize(file_full_path)
+    if file_size_in_bytes < 500:
+        char_difference = 500 - file_size_in_bytes
+        str_to_append = "\n" * (char_difference + 1)
+        with open(random_file_name, 'a') as f:
+            f.write(str_to_append)
+    
     return random_file_name
 
 
