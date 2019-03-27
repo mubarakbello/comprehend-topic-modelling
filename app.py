@@ -1,5 +1,5 @@
 import requests
-import boto3
+import boto3, botocore
 import json
 import os
 import uuid
@@ -10,15 +10,15 @@ from sanic.response import text as sanic_text, json as sanic_json
 
 
 # Specify the access keys below here
-# in a ~/.aws/credentials file
+# in a ~/.aws/credentials file, then delete these lines
 aws_access_key_id = ""
 aws_secret_access_key = ""
 
 # Specify the region information below here
-# in a ~/.aws/config file
+# or in a ~/.aws/config file
 region = ""
 
-DATA_ACCESS_ROLE_ARN = "" # specify this here
+DATA_ACCESS_ROLE_ARN = "<your_role_arn_for_access_to_s3>"
 
 # Create an S3 recource
 s3_resource = boto3.resource('s3')
@@ -63,10 +63,15 @@ def detect_topic_model(input_config, output_config):
 
         if job_status == 'COMPLETED':
             print("Job completed")
-            return result
+            output_s3uri = result["TopicsDetectionJobProperties"]["OutputDataConfig"]["S3Uri"]
+
+            return {
+                "status": job_status,
+                "output": output_s3uri
+            }
         elif job_status == 'FAILED':
             print("Job failed")
-            return result
+            return {"status": job_status}
         else:
             print("job_status: " + job_status)
             time.sleep(10)
@@ -76,7 +81,7 @@ def create_temp_file(url_hostname, file_content):
     random_file_name = ''.join([str(uuid.uuid4().hex[:6]), file_name_ending])
     with open(random_file_name, 'w') as f:
         f.write(file_content)
-    
+
     # now, check if the created file size is up to the minimum 500 bytes
     # If it isn't, append newlines to fill it up
     file_full_path = ''.join([os.getcwd(), '/', random_file_name])
@@ -86,8 +91,20 @@ def create_temp_file(url_hostname, file_content):
         str_to_append = "\n" * (char_difference + 1)
         with open(random_file_name, 'a') as f:
             f.write(str_to_append)
-    
+
     return random_file_name
+
+def download_from_s3(key, local_path):
+    while True:
+        try:
+            bucket_resource.download_file(
+                Key=key,
+                Filename=local_path
+            )
+            break
+        except botocore.exceptions.ClientError:
+            time.sleep(5)
+            pass
 
 
 @app.route("/", methods=["POST",])
@@ -95,7 +112,7 @@ async def endpoint(request):
     # fetch the url from the request body
     if request.form.get("url") is None:
         return sanic_json({"error_message": "url not specified"})
-    
+
     _URL = request.form.get("url")
 
     # fetch the html content of the url
@@ -107,16 +124,14 @@ async def endpoint(request):
     soup = BeautifulSoup(page_body.content, 'html.parser')
     [s.extract() for s in soup(['iframe', 'script', 'img', 'style'])]
     body_part = "\n".join(soup.body.stripped_strings)
-    
+
     # Write the cleaned bodypart to a txt file and save to aws S3
     # Get the S3 input uri and make a input_config object
     # Define the S3 output uri and make a output_config object
     # Detect the topic model, then output the result
 
     url_hostname = str(_URL).replace('/', '').replace('.', '-')
-
     created_file_name = create_temp_file(url_hostname, body_part)
-
     bucket_resource.upload_file(
         Filename=created_file_name,
         Key=created_file_name
@@ -128,16 +143,21 @@ async def endpoint(request):
 
     input_config = {"S3Uri": s3_input_uri}
     output_config = {"S3Uri": s3_output_uri}
+
     response = detect_topic_model(input_config, output_config)
 
-    return sanic_json(response)
+    if response["status"] == 'FAILED':
+        return sanic_json(json.dumps(response))
+
+    output_s3uri = response["output"].replace('\/', '/')
+
+    # download_key = output_s3uri[31:].replace("\/", "/")
+    # download_local_path = output_s3uri[93:]
+
+    # download_from_s3(download_key, download_local_path)
+
+    return sanic_json({"output_uri": output_s3uri})
 
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
-
-
-# TODO
-# 1. Check out RabbitMQ for possible queuing solution
-# i.e. for storing the data, before feeding it to comprehend
-# 2. Store the data in a file as an alternative to above
